@@ -1,5 +1,8 @@
 FROM python:3.12-slim
 
+# Links the image to its (private) repo on ghcr.io, so the package gets the repo's access.
+LABEL org.opencontainers.image.source=https://github.com/harkenn-project/flash
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
