@@ -19,30 +19,31 @@ def client():
 
 def test_flasher_page(client):
     r = client.get("/")
-    assert r.status_code == 200 and "esp-web-install-button" in r.text
-    assert "relay" not in r.text.lower()  # the relay isn't advertised
+    assert r.status_code == 200 and "esptool-js@" in r.text
+    assert "Embedded PSRAM 8MB" in r.text and '"16MB"' in r.text  # it checks the board before writing
+    assert "/relay/" not in r.text  # the relay isn't advertised
 
 
-def test_manifest_from_the_releases(client, monkeypatch):
+def test_release_from_the_releases_branch(client, monkeypatch):
     calls = []
 
     def fake(url):
         calls.append(url)
-        return {"version": "0.13.0", "install": {"file": "v0.13.0/harkenn-speaker-0.13.0-install.bin"}}
+        return {"version": "0.13.0", "hardware": "sp-esp32-s3-1.28-box",
+                "install": {"file": "v0.13.0/harkenn-speaker-0.13.0-install.bin", "size": 123, "sha256": "ab" * 32}}
 
     monkeypatch.setattr(main, "_get_json", fake)
-    m = client.get("/manifest/stable.json").json()
-    assert m["version"] == "0.13.0" and m["new_install_prompt_erase"] is True
-    assert m["builds"] == [{"chipFamily": "ESP32-S3", "parts": [
-        {"path": main.RELEASES + "/v0.13.0/harkenn-speaker-0.13.0-install.bin", "offset": 0}]}]
-    client.get("/manifest/stable.json")
+    assert client.get("/release/stable.json").json() == {
+        "version": "0.13.0", "hardware": "sp-esp32-s3-1.28-box",
+        "url": main.RELEASES + "/v0.13.0/harkenn-speaker-0.13.0-install.bin", "size": 123, "sha256": "ab" * 32}
+    client.get("/release/stable.json")
     assert calls == [main.RELEASES + "/latest.json"]  # cached
-    assert client.get("/manifest/nightly.json").status_code == 404
+    assert client.get("/release/nightly.json").status_code == 404
 
 
-def test_manifest_without_an_install_image(client, monkeypatch):
+def test_release_without_an_install_image(client, monkeypatch):
     monkeypatch.setattr(main, "_get_json", lambda url: {"version": "0.12.0"})
-    assert client.get("/manifest/beta.json").status_code == 404
+    assert client.get("/release/beta.json").status_code == 404
 
 
 def test_relay_pairs_and_passes_binary_frames(client):

@@ -4,22 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Install Harkenn on a speaker</title>
-  <script type="module" src="https://unpkg.com/esp-web-tools@10.1.1/dist/web/install-button.js?module"></script>
   <style>
-    :root { --bg: #0e1220; --card: #171c2f; --line: #2a3150; --text: #e6e9f5; --muted: #8d94b3; --accent: #7aa2ff; }
+    :root { --bg: #0e1220; --card: #171c2f; --line: #2a3150; --text: #e6e9f5; --muted: #8d94b3; --accent: #7aa2ff;
+            --ok: #5fd3a0; --bad: #ff6b81; }
     * { box-sizing: border-box; }
     body { font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px 16px; }
     main { max-width: 640px; margin: auto; }
     h1 { font-size: 26px; margin: 8px 0 4px; }
     .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin: 18px 0; }
     .muted { color: var(--muted); }
-    ol { padding-left: 20px; } li { margin: 6px 0; }
+    ol, ul { padding-left: 20px; } li { margin: 6px 0; }
     a { color: var(--accent); }
-    select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: #11162a; color: inherit; }
-    esp-web-install-button button, .install { font: inherit; font-weight: 600; padding: 12px 20px; border-radius: 10px;
-      border: 0; background: var(--accent); color: #0b1020; cursor: pointer; }
-    #version { margin-left: 8px; }
-    .warn { border-color: #6b5420; }
+    select, button { font: inherit; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line);
+                     background: #11162a; color: inherit; }
+    button.primary { font-weight: 600; border: 0; background: var(--accent); color: #0b1020; cursor: pointer; }
+    button:disabled { opacity: .45; cursor: default; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin: 12px 0; }
+    #checks { list-style: none; padding: 0; }
+    #checks li::before { content: "·  "; color: var(--muted); }
+    #checks li.ok::before { content: "✓  "; color: var(--ok); }
+    #checks li.bad::before { content: "✗  "; color: var(--bad); }
+    #checks li.bad { color: var(--bad); }
+    progress { width: 100%; height: 14px; }
+    #message.bad { color: var(--bad); } #message.ok { color: var(--ok); }
   </style>
 </head>
 <body>
@@ -41,7 +48,7 @@
 
   <section class="card">
     <h2>Install</h2>
-    <p>
+    <div class="row">
       <label>Release
         <select id="channel">
           <option value="stable">Stable</option>
@@ -51,12 +58,16 @@
         </select>
       </label>
       <span id="version" class="muted"></span>
-    </p>
-    <esp-web-install-button id="install" manifest="/manifest/stable.json">
-      <button slot="activate" class="install">Connect and install</button>
-      <span slot="unsupported">Your browser can't do this: use Chrome or Edge on a computer.</span>
-      <span slot="not-allowed">This page has to be opened over https.</span>
-    </esp-web-install-button>
+    </div>
+    <div class="row">
+      <button class="primary" id="connect">1. Connect and check the speaker</button>
+      <button class="primary" id="install" disabled>2. Install</button>
+    </div>
+    <ul id="checks"></ul>
+    <progress id="progress" max="100" value="0" hidden></progress>
+    <p id="message"></p>
+    <p class="muted" id="unsupported" hidden>Your browser can't talk to USB devices: use Chrome or Edge on a computer
+      (and open this page over https).</p>
   </section>
 
   <section class="card">
@@ -70,21 +81,119 @@
       The firmware is <a href="https://github.com/harkenn-project/speaker-firmware">speaker-firmware</a>.</p>
   </section>
 </main>
-<script>
-  const channel = document.getElementById("channel"), button = document.getElementById("install"),
-        version = document.getElementById("version");
-  async function choose() {
-    const url = `/manifest/${channel.value}.json`;
-    button.manifest = url;
-    button.setAttribute("manifest", url);
-    version.textContent = "";
-    try {
-      const r = await fetch(url);
-      version.textContent = r.ok ? `version ${(await r.json()).version}` : await r.text();
-    } catch (e) { version.textContent = "couldn't check the version"; }
+<script type="module">
+  import { ESPLoader, Transport } from "https://unpkg.com/esptool-js@0.7.1/bundle.js";
+
+  // What a Harkenn speaker is: anything else is refused before a byte is written.
+  const BOARD = { chip: "ESP32-S3", psram: "Embedded PSRAM 8MB", flash: "16MB" };
+
+  const $ = id => document.getElementById(id);
+  let release = null, loader = null, transport = null, checked = false;
+
+  function say(text, cls = "") { $("message").textContent = text; $("message").className = cls; }
+  function check(text, ok) {
+    const li = document.createElement("li");
+    li.textContent = text;
+    li.className = ok === undefined ? "" : ok ? "ok" : "bad";
+    $("checks").append(li);
+    return ok;
   }
-  channel.addEventListener("change", choose);
-  choose();
+
+  async function chooseRelease() {
+    release = null;
+    $("version").textContent = "";
+    try {
+      const r = await fetch(`/release/${$("channel").value}.json`);
+      if (!r.ok) throw new Error(await r.text());
+      release = await r.json();
+      $("version").textContent = `version ${release.version}`;
+    } catch (e) { $("version").textContent = e.message; }
+    $("install").disabled = !(checked && release);
+  }
+
+  async function disconnect() {
+    try { if (transport) await transport.disconnect(); } catch (e) { /* already gone */ }
+    transport = loader = null;
+  }
+
+  $("connect").onclick = async () => {
+    await disconnect();
+    checked = false;
+    $("install").disabled = true;
+    $("checks").replaceChildren();
+    say("");
+    let port;
+    try { port = await navigator.serial.requestPort(); } catch (e) { return; }  // the person cancelled
+    try {
+      say("Connecting... if it doesn't, hold the speaker's button while you plug it in, then try again.");
+      transport = new Transport(port, true);
+      loader = new ESPLoader({ transport, baudrate: 921600, terminal: { clean() {}, write() {}, writeLine() {} } });
+      await loader.main();
+      const name = loader.chip.CHIP_NAME;
+      const description = await loader.chip.getChipDescription(loader);
+      const features = await loader.chip.getChipFeatures(loader);
+      const flash = await loader.detectFlashSize();
+      const psram = features.find(f => f.startsWith("Embedded PSRAM")) || "no PSRAM";
+      const ok = [
+        check(`Chip: ${description}`, name === BOARD.chip),
+        check(`PSRAM: ${psram}`, psram.startsWith(BOARD.psram)),
+        check(`Flash: ${flash || "unknown"}`, flash === BOARD.flash),
+      ].every(Boolean);
+      if (!ok) {
+        say("This isn't a Spotpear ESP32-S3 1.28\" BOX (an ESP32-S3 with 8 MB of PSRAM and 16 MB of flash), so " +
+            "nothing was written to it.", "bad");
+        await disconnect();
+        return;
+      }
+      checked = true;
+      say("It's the right board. Choose a release and press Install.", "ok");
+      $("install").disabled = !release;
+    } catch (e) {
+      say(`Couldn't talk to the speaker: ${e.message || e}`, "bad");
+      await disconnect();
+    }
+  };
+
+  $("install").onclick = async () => {
+    if (!checked || !release || !loader) return;
+    if (!confirm(`Erase the speaker and install Harkenn ${release.version}?`)) return;
+    $("install").disabled = $("connect").disabled = $("channel").disabled = true;
+    const progress = $("progress");
+    try {
+      say(`Downloading ${release.version}...`);
+      const r = await fetch(release.url);
+      if (!r.ok) throw new Error(`download failed (HTTP ${r.status})`);
+      const image = new Uint8Array(await r.arrayBuffer());
+      const digest = [...new Uint8Array(await crypto.subtle.digest("SHA-256", image))]
+        .map(b => b.toString(16).padStart(2, "0")).join("");
+      if (image.length !== release.size || digest !== release.sha256) throw new Error("the download doesn't check out");
+      check(`Firmware ${release.version}: checksum OK`, true);
+      say("Erasing and writing: keep the speaker plugged in (about two minutes).");
+      progress.hidden = false;
+      await loader.writeFlash({
+        fileArray: [{ data: image, address: 0 }],
+        flashMode: "keep", flashFreq: "keep", flashSize: "keep",
+        eraseAll: true, compress: true,
+        reportProgress: (i, written, total) => { progress.value = written * 100 / total; },
+      });
+      await loader.after("hard_reset");
+      say("Done! The speaker is starting up: join its Harkenn-XXXX Wi-Fi to set it up.", "ok");
+    } catch (e) {
+      say(`Install failed: ${e.message || e}. Unplug the speaker, plug it in again and start over.`, "bad");
+    } finally {
+      progress.hidden = true;
+      checked = false;
+      await disconnect();
+      $("connect").disabled = $("channel").disabled = false;
+    }
+  };
+
+  $("channel").onchange = chooseRelease;
+  if (!("serial" in navigator)) {
+    $("unsupported").hidden = false;
+    $("connect").disabled = true;
+  }
+  chooseRelease();
 </script>
 </body>
 </html>

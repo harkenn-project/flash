@@ -1,7 +1,8 @@
 """flash.mylife.ninja: the Harkenn speaker web flasher, and the relay for speakers that can't reach their server.
 
-The flasher (/) installs speaker firmware over USB from the browser, with ESP Web Tools and the install images that
-speaker-firmware publishes on its releases branch.
+The flasher (/) installs speaker firmware over USB from the browser (esptool-js), with the install images that
+speaker-firmware publishes on its releases branch. It checks the board first (an ESP32-S3 with 8 MB of PSRAM and
+16 MB of flash) and the image's SHA-256, and won't write anything to a board that isn't a Harkenn speaker.
 
 The relay (/relay/...) is not advertised. A speaker that can't reach its Harkenn server, and was set up for remote
 connection, connects to /relay/speaker/<id>; its Harkenn server connects to /relay/harkenn/<id> while the speaker is
@@ -37,7 +38,7 @@ RELEASES = os.environ.get("FLASH_RELEASES_URL",
                           "https://raw.githubusercontent.com/harkenn-project/speaker-firmware/releases").rstrip("/")
 CHANNELS = {"stable": "latest.json", "beta": "latest-beta.json", "alpha": "latest-alpha.json",
             "development": "latest-development.json"}
-MANIFEST_CACHE_S = 300
+RELEASE_CACHE_S = 300
 RELAY_ID = re.compile(r"^[0-9a-f]{32}$")
 MAX_FRAME = 1024 * 1024  # a frame is at most a chunk of speech, a fetched file or a screen's picture
 MAX_SLOTS = int(os.environ.get("FLASH_MAX_RELAYS", "500"))
@@ -55,29 +56,29 @@ def _get_json(url: str) -> dict:
         return json.loads(resp.read(64 * 1024))
 
 
-async def manifest(request: Request) -> Response:
-    """An ESP Web Tools manifest for the newest install image on a release channel."""
+async def release(request: Request) -> Response:
+    """The newest install image on a release channel: where it is, its size and SHA-256 (the page checks both)."""
     channel = request.path_params["channel"]
     if channel not in CHANNELS:
         return PlainTextResponse("unknown channel", status_code=404)
     cached = _manifests.get(channel)
-    if not cached or time.time() - cached[0] > MANIFEST_CACHE_S:
+    if not cached or time.time() - cached[0] > RELEASE_CACHE_S:
         try:
-            release = await run_in_threadpool(_get_json, f"{RELEASES}/{CHANNELS[channel]}")
+            found = await run_in_threadpool(_get_json, f"{RELEASES}/{CHANNELS[channel]}")
         except Exception as e:  # GitHub down: an older answer is better than none
             if not cached:
                 return PlainTextResponse(f"couldn't read the releases: {e}", status_code=502)
-            log.warning("releases: %s (using the cached manifest)", e)
+            log.warning("releases: %s (using the cached answer)", e)
         else:
-            install = release.get("install")
+            install = found.get("install")
             if not install:
                 return PlainTextResponse(f"no install image on the {channel} channel yet", status_code=404)
             cached = (time.time(), {
-                "name": "Harkenn speaker",
-                "version": release["version"],
-                "new_install_prompt_erase": True,
-                "builds": [{"chipFamily": "ESP32-S3",
-                            "parts": [{"path": f"{RELEASES}/{install['file']}", "offset": 0}]}],
+                "version": found["version"],
+                "hardware": found.get("hardware", ""),
+                "url": f"{RELEASES}/{install['file']}",
+                "size": install["size"],
+                "sha256": install["sha256"],
             })
             _manifests[channel] = cached
     return JSONResponse(cached[1], headers={"Cache-Control": "no-cache"})
@@ -187,7 +188,7 @@ def create_app() -> Starlette:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     return Starlette(routes=[
         Route("/", index),
-        Route("/manifest/{channel}.json", manifest),
+        Route("/release/{channel}.json", release),
         Route("/healthz", healthz),
         WebSocketRoute("/relay/speaker/{rid}", relay_speaker),
         WebSocketRoute("/relay/harkenn/{rid}", relay_harkenn),
