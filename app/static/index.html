@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Install Harkenn on a speaker</title>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10.1.1/dist/web/install-button.js?module"></script>
+  <style>
+    :root { --bg: #0e1220; --card: #171c2f; --line: #2a3150; --text: #e6e9f5; --muted: #8d94b3; --accent: #7aa2ff; }
+    * { box-sizing: border-box; }
+    body { font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 24px 16px; }
+    main { max-width: 640px; margin: auto; }
+    h1 { font-size: 26px; margin: 8px 0 4px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin: 18px 0; }
+    .muted { color: var(--muted); }
+    ol { padding-left: 20px; } li { margin: 6px 0; }
+    a { color: var(--accent); }
+    select { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: #11162a; color: inherit; }
+    esp-web-install-button button, .install { font: inherit; font-weight: 600; padding: 12px 20px; border-radius: 10px;
+      border: 0; background: var(--accent); color: #0b1020; cursor: pointer; }
+    #version { margin-left: 8px; }
+    .warn { border-color: #6b5420; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Install Harkenn on a speaker</h1>
+  <p class="muted">Harkenn is a private voice assistant for your home: small speakers that listen and answer, and a
+    server you run yourself. This page puts the speaker firmware on a Spotpear ESP32-S3 1.28" BOX, straight from your
+    browser.</p>
+
+  <section class="card">
+    <h2>Before you start</h2>
+    <ol>
+      <li>Use Chrome or Edge on a computer (they can talk to USB devices; Firefox and Safari can't).</li>
+      <li>Connect the speaker with a USB-C <em>data</em> cable.</li>
+      <li>Installing erases the speaker, including the XiaoZhi firmware it comes with. There's no going back from this
+        page, so back it up first if you might want it.</li>
+    </ol>
+  </section>
+
+  <section class="card">
+    <h2>Install</h2>
+    <p>
+      <label>Release
+        <select id="channel">
+          <option value="stable">Stable</option>
+          <option value="beta">Beta</option>
+          <option value="alpha">Alpha</option>
+          <option value="development">Development</option>
+        </select>
+      </label>
+      <span id="version" class="muted"></span>
+    </p>
+    <esp-web-install-button id="install" manifest="/manifest/stable.json">
+      <button slot="activate" class="install">Connect and install</button>
+      <span slot="unsupported">Your browser can't do this: use Chrome or Edge on a computer.</span>
+      <span slot="not-allowed">This page has to be opened over https.</span>
+    </esp-web-install-button>
+  </section>
+
+  <section class="card">
+    <h2>Then</h2>
+    <ol>
+      <li>The speaker starts a Wi-Fi network called <strong>Harkenn-XXXX</strong>. Join it with your phone and pick
+        your home Wi-Fi on the page that opens (or go to <strong>192.168.4.1</strong>).</li>
+      <li>It finds your Harkenn server and shows a 3-digit code. Enter it on the server's admin page to adopt it.</li>
+    </ol>
+    <p class="muted">No server yet? See <a href="https://github.com/harkenn-project/server-docker">server-docker</a>.
+      The firmware is <a href="https://github.com/harkenn-project/speaker-firmware">speaker-firmware</a>.</p>
+  </section>
+</main>
+<script>
+  const channel = document.getElementById("channel"), button = document.getElementById("install"),
+        version = document.getElementById("version");
+  async function choose() {
+    const url = `/manifest/${channel.value}.json`;
+    button.manifest = url;
+    button.setAttribute("manifest", url);
+    version.textContent = "";
+    try {
+      const r = await fetch(url);
+      version.textContent = r.ok ? `version ${(await r.json()).version}` : await r.text();
+    } catch (e) { version.textContent = "couldn't check the version"; }
+  }
+  channel.addEventListener("change", choose);
+  choose();
+</script>
+</body>
+</html>
